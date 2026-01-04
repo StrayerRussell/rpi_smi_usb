@@ -47,10 +47,12 @@
 #define SMI_TIMING       10, 17, 33, 17   // 670 ns cycle time (roughly 1.49MHz)
 #endif
 
-#define TX_TEST         0   // If non-zero, use dummy Tx data
-#define LED_D0_PIN      8   // GPIO pin for D0 output
 #define REQUEST_THRESH  2   // DMA request threshold
 #define DMA_CHAN        10  // DMA channel to use
+			    //
+// Number of samples to be captured
+#define NSAMPLES        500
+
 
 // User defined paramaters
 
@@ -74,17 +76,22 @@ volatile SMI_DCA_REG *smi_dca;
 volatile SMI_DCD_REG *smi_dcd;
 
 uint8_t tx_data[ARRAY_SIZE];
+uint8_t sample_data[NSAMPLES];
 
 #define VC_MEM_SIZE         (PAGE_SIZE + ARRAY_SIZE * sizeof(uint8_t))
 
-uint8_t *txdata;                       // Pointer to uncached Tx data buffer
+void *txdata;                       // Pointer to uncached Tx data buffer
+void *rxbuff;
 
 void map_devices(void);
 void fail(char *s);
 void terminate(int sig);
 void init_smi(int width, int ns, int setup, int hold, int strobe);
-void setup_smi_dma(MEM_MAP *mp, int nsamp);
 void start_smi(MEM_MAP *mp);
+int adc_dma_end(void *buff, uint8_t *data, int nsamp);
+uint32_t *setup_smi_dma(MEM_MAP *mp, int nsamp, int mode);
+
+
 
 // USB GPIO PIN MAPPINGS
 // (D- 8 (SMI0), D+ 12 (SMI4))
@@ -100,6 +107,7 @@ void start_smi(MEM_MAP *mp);
 
 int main(int argc, char *argv[])
 {
+    int i;
     signal(SIGINT, terminate);
 
     for(int i=0; i < ARRAY_SIZE; i++) {
@@ -109,8 +117,8 @@ int main(int argc, char *argv[])
     map_devices();
     init_smi(SMI_DATA_WIDTH, SMI_TIMING); //setup SMI registers for DMA TX.
     map_uncached_mem(&vc_mem, VC_MEM_SIZE); //map GPIO, DMA, and SMI registers into virtual mem (user space)
-    setup_smi_dma(&vc_mem, ARRAY_SIZE); //setup DMA for SMI DMA TX.
-    memcpy(txdata, tx_data, ARRAY_SIZE * sizeof(uint8_t)); //copy data from prep buffer to DMA transmission buffer.
+    txdata = setup_smi_dma(&vc_mem, ARRAY_SIZE, 1); //setup DMA for SMI DMA TX.
+    memcpy((uint8_t*)txdata, tx_data, ARRAY_SIZE * sizeof(uint8_t)); //copy data from prep buffer to DMA transmission buffer.
     start_smi(&vc_mem); //actually start the SMI transfer
     //enter a tight loop waiting for the DMA transmission to complete
     //(improve later so that reception starts as soon as possible after TX is done)
@@ -118,28 +126,48 @@ int main(int argc, char *argv[])
     while (dma_active(DMA_CHAN))
         usleep(10);
     //cleanup and exit
+    rxbuff = setup_smi_dma(&vc_mem, NSAMPLES, 0);
+    start_smi(&vc_mem); //actually start the SMI transfer
+    while (dma_active(DMA_CHAN)) ;
+    adc_dma_end(rxbuff, sample_data, NSAMPLES);
+    for (i=0; i<NSAMPLES; i++)
+        printf("Sample Num %d: %d\n", i, sample_data[i]);
     terminate(0);
     return(0);
 }
 
 // Set up SMI transfers using DMA
 // the ADC "equivalent" of this is adc_dma_start
-void setup_smi_dma(MEM_MAP *mp, int nsamp)
+uint32_t *setup_smi_dma(MEM_MAP *mp, int nsamp, int mode)
 {
     DMA_CB *cbs=mp->virt;
 
-    txdata = (uint8_t *)(cbs + 1); //Data starts after control blocks
+    uint32_t *dmabuffer;
     smi_dmc->dmaen = 1;
     smi_cs->enable = 1;
     smi_cs->clear = 1;
     smi_cs->pxldat = 1;
     smi_l->len = nsamp * sizeof(uint8_t);
-    smi_cs->write = 1;
+    smi_cs->write = mode;
     enable_dma(DMA_CHAN);
-    cbs[0].ti = DMA_DEST_DREQ | (DMA_SMI_DREQ << 16) | DMA_CB_SRCE_INC | DMA_WAIT_RESP;
-    cbs[0].tfr_len = nsamp * sizeof(uint8_t);
-    cbs[0].srce_ad = MEM_BUS_ADDR(mp, txdata);
-    cbs[0].dest_ad = REG_BUS_ADDR(smi_regs, SMI_D);
+    switch(mode) {
+	case 0:
+            uint32_t *data=(uint32_t *)(cbs+4), *rxdata=data+0x20;
+            dmabuffer = rxdata; 
+	    cbs[0].ti = DMA_SRCE_DREQ | (DMA_SMI_DREQ << 16) | DMA_CB_DEST_INC;
+            cbs[0].tfr_len = nsamp * sizeof(uint8_t);
+            cbs[0].srce_ad = REG_BUS_ADDR(smi_regs, SMI_D);
+            cbs[0].dest_ad = MEM_BUS_ADDR(mp, dmabuffer);
+            break;
+        case 1:
+            dmabuffer = (uint32_t *)(cbs + 1); //Data starts after control blocks
+            cbs[0].ti = DMA_DEST_DREQ | (DMA_SMI_DREQ << 16) | DMA_CB_SRCE_INC | DMA_WAIT_RESP;
+            cbs[0].tfr_len = nsamp * sizeof(uint8_t);
+            cbs[0].srce_ad = MEM_BUS_ADDR(mp, dmabuffer);
+            cbs[0].dest_ad = REG_BUS_ADDR(smi_regs, SMI_D);
+	    break;
+    }
+    return(dmabuffer);
 }
 
 // Start SMI DMA transfers
@@ -151,7 +179,18 @@ void start_smi(MEM_MAP *mp)
     smi_cs->start = 1;
 }
 
+// ADC DMA is complete, get data
+int adc_dma_end(void *buff, uint8_t *data, int nsamp)
+{
+    uint8_t *bp = (uint8_t *)buff;
+    int i;
 
+    for (i=0; i<nsamp; i++)
+    {
+        *data++ = bp[i];
+    }
+    return(nsamp);
+}
 
 uint8_t reverse_bits (uint8_t b) {
     b = (b & 0xF0) >> 4 | (b & 0x0F) << 4; // Step 1: Swap nibbles
