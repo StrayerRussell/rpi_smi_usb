@@ -41,10 +41,12 @@
 #include "rpi_dma_utils.h"
 #include "rpi_smi_defs.h"
 
-#if PHYS_REG_BASE==PI_4_REG_BASE        // Timings for RPi v4 (1.5 GHz)
-#define SMI_TIMING       10, 15, 30, 15    // 400 ns cycle time
-#else                                   // Timings for RPi v0-3 (1 GHz)
-#define SMI_TIMING       10, 17, 33, 17   // 670 ns cycle time (roughly 1.49MHz)
+// SMI_TIMING timebase, wsetup wstrobe, whold, rsetup, rhold, rstrobe
+
+#if PHYS_REG_BASE==PI_4_REG_BASE                // Timings for RPi v4 (1.5 GHz)
+#define SMI_TIMING        1, 250, 500, 250, 31, 63, 31   // 1000 (roughly 1.5MHz)
+#else                                           // Timings for RPi v0-3 (1 GHz)
+#define SMI_TIMING        28, 8, 8, 8, 1, 1, 1   // 670 (roughly 1.49MHz)
 #endif
 
 #define REQUEST_THRESH  2   // DMA request threshold
@@ -85,10 +87,11 @@
 
 // User defined paramaters
 
-#define ARRAY_SIZE     100     //Size of data array
+#define ARRAY_SIZE     256     //Size of data array
 #define SMI_DATA_WIDTH 8       //8-bit or 16-bit SMI transfers
 
-uint8_t syncData[8] = {16,1,16,1,16,1,16,16}, eopData[4] = {0,0,1,1}, packetData[8] = {0,0,0,0,0,0,0,0};
+uint8_t syncData[8] = {16,1,16,1,16,1,16,16}, eopData[4] = {0,0,1,1};
+uint8_t packetData[8] = {0x00,0x05,0x0C,0x00,0x00,0x00,0x00,0x00};
 
 // Structures for mapped I/O devices, and non-volatile memory
 extern MEM_MAP gpio_regs, dma_regs;
@@ -117,7 +120,7 @@ void *rxbuff;
 void map_devices(void);
 void fail(char *s);
 void terminate(int sig);
-void init_smi(int width, int ns, int setup, int hold, int strobe);
+void init_smi(int width, int ns, int wsetup, int whold, int wstrobe, int rsetup, int rhold, int rstrobe);
 void start_smi(MEM_MAP *mp);
 int adc_dma_end(void *buff, uint8_t *data, int nsamp);
 uint8_t reverse_bits(uint8_t input);
@@ -131,6 +134,7 @@ uint8_t create_data_packet(uint8_t pid, uint8_t *data, uint8_t len, uint8_t *out
 uint32_t *setup_smi_dma(MEM_MAP *mp, int nsamp, int mode);
 void dump_buffer(uint8_t *buffer, int len);
 void mode_word(uint32_t *wp, int n, uint32_t mode);
+void reset_bus(MEM_MAP *mp);
 
 // USB GPIO PIN MAPPINGS
 // (D- 8 (SMI0), D+ 12 (SMI4))
@@ -146,7 +150,7 @@ void mode_word(uint32_t *wp, int n, uint32_t mode);
 
 int main(int argc, char *argv[]) {
     
-    int len = 0;
+    int len = 0, lenTwo = 0;
     signal(SIGINT, terminate);
     /*
     for(int i=0; i < ARRAY_SIZE; i++) {
@@ -157,30 +161,55 @@ int main(int argc, char *argv[]) {
     map_devices();
     init_smi(SMI_DATA_WIDTH, SMI_TIMING); //setup SMI registers for DMA TX.
     map_uncached_mem(&vc_mem, VC_MEM_SIZE); //map GPIO, DMA, and SMI registers into virtual mem (user space)
-    len = create_token_packet(IN,24,1, packetBuffer);
+    reset_bus(&vc_mem); //Trigger USB bus reset (required for connected devices to respond to commands)
+    len = create_token_packet(SETUP,0,0, packetBuffer);
     len = enc_nrzi(tx_data, packetBuffer, len, 0);
+    lenTwo = create_data_packet(DATA0, packetData, 8, packetBuffer);
+    len = enc_nrzi(tx_data, packetBuffer, lenTwo, len);
     dump_buffer(tx_data, len);
     printf("\nLen: %d\n", len);
-    swap_bytes(tx_data, len); //fixes byte ordering issue:wq
+    swap_bytes(tx_data, len); //fixes byte ordering issue
     txdata = setup_smi_dma(&vc_mem, len, 1); //setup DMA for SMI DMA TX.
     memcpy((uint8_t*)txdata, tx_data, len); //copy data from prep buffer to DMA transmission buffer.
     start_smi(&vc_mem); //actually start the SMI transfer
     usleep(1);
-    while (dma_active(DMA_CHAN)); // Wait for TX to finish
+    while (dma_active(DMA_CHAN)){}; // Wait for TX to finish
+    printf("Initial DMA Finished\n"); //Required for delay (for some reasons)
     rxbuff = setup_smi_dma(&vc_mem, NSAMPLES, 0); //Init SMI for read
     start_smi(&vc_mem); //actually start the SMI transfer
     usleep(1);
-    while (dma_active(DMA_CHAN)); // Wait for RX to finish
+    while (dma_active(DMA_CHAN)){}; // Wait for RX to finish
+    //printf("Secondary DMA Finished\n");
     adc_dma_end(rxbuff, sample_data, NSAMPLES);
     dump_buffer(sample_data, NSAMPLES);
     printf("\n\n\n");
-    len = create_data_packet(DATA0, packetData, 8, packetBuffer);
-    len = enc_nrzi(tx_data, packetBuffer, len, 0);
-    printf("Len: %d\n", len);
-    dump_buffer(tx_data, len);
-    printf("\n\n\n");
     terminate(0);
     return(0);
+}
+
+void reset_bus(MEM_MAP *mp) { // Uses DMA because I could not get direct register writes from the CPU to work
+    //DMA_CB *cbs=mp->virt;
+    //uint32_t modes[4], i;
+
+    /*
+    for (i=0; i<2; i++) // Get current pin mode values
+        modes[i] = modes[i+2] = *REG32(gpio_regs, GPIO_MODE0 + i*4);
+    mode_word(&modes[0], 8, GPIO_ALT1);// GPIO 8: Ctrl register 0 position 8
+    mode_word(&modes[1], 2, GPIO_ALT1);// GPIO 12: Ctrl register 1 position 2
+    */
+    
+    gpio_mode(8, GPIO_OUT);
+    gpio_mode(12, GPIO_OUT);
+    gpio_out(8, 0);
+    gpio_out(12, 0);
+    usleep(13000);
+    gpio_mode(8, GPIO_IN);
+    gpio_mode(12, GPIO_IN);
+    gpio_pull(8, 0);
+    gpio_pull(12, 0);
+    usleep(10000);
+    printf("Shabingus\n");
+
 }
 
 // Set up SMI transfers using DMA
@@ -333,8 +362,10 @@ void mode_word(uint32_t *wp, int n, uint32_t mode) {
 uint8_t enc_nrzi(uint8_t *outbuffer, uint8_t *inbuffer, uint32_t len, uint32_t offset) {
     uint8_t i = 0, j = 0, seqOnes = 0, txSize = 12; // 8 bits for sync and 3 for EOP
     uint8_t byteMask = 0x80;
-    if(offset != 0)
-        outbuffer += (offset + 1); // Skip over offset, allows for queuing multiple packets.
+    if(offset != 0) {
+        outbuffer += offset; // Skip over offset, allows for queuing multiple packets.
+        txSize += offset;
+    }
     memcpy(outbuffer, syncData, 8); // Populate SYNC at start of buffer.
     outbuffer += 8; // Skips over SYNC above
     for(i=0; i<len; i++) {
@@ -442,6 +473,10 @@ void fail(char *s) {
 // Free memory segments and exit
 void terminate(int sig) {
     printf("Closing\n");
+    gpio_mode(8, GPIO_IN);
+    gpio_mode(12, GPIO_IN);
+    gpio_pull(8, 0);
+    gpio_pull(12, 0);  
     if (smi_regs.virt)
         *REG32(smi_regs, SMI_CS) = 0;
     stop_dma(DMA_CHAN);
@@ -454,7 +489,7 @@ void terminate(int sig) {
 
 // Initialise SMI, given data width, time step, and setup/hold/strobe counts
 // Step value is in nanoseconds: even numbers, 2 to 30
-void init_smi(int width, int ns, int setup, int strobe, int hold) {
+void init_smi(int width, int ns, int wsetup, int wstrobe, int whold, int rsetup, int rstrobe, int rhold) {
     int divi = ns / 2;
 
     smi_cs  = (SMI_CS_REG *) REG32(smi_regs, SMI_CS);
@@ -484,9 +519,12 @@ void init_smi(int width, int ns, int setup, int strobe, int hold) {
     }
     if (smi_cs->seterr)
         smi_cs->seterr = 1;
-    smi_dsr->rsetup = smi_dsw->wsetup = setup;
-    smi_dsr->rstrobe = smi_dsw->wstrobe = strobe;
-    smi_dsr->rhold = smi_dsw->whold = hold;
+    smi_dsr->rsetup = rsetup;
+    smi_dsw->wsetup = wsetup;
+    smi_dsr->rstrobe = rstrobe;
+    smi_dsw->wstrobe = wstrobe;
+    smi_dsr->rhold = rhold;
+    smi_dsw->whold = whold;
     smi_dmc->panicr = smi_dmc->panicw = 8;
     smi_dmc->reqr = smi_dmc->reqw = REQUEST_THRESH;
     smi_dsr->rwidth = smi_dsw->wwidth = width;
