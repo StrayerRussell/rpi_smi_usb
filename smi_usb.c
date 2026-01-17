@@ -46,14 +46,14 @@
 #if PHYS_REG_BASE==PI_4_REG_BASE                // Timings for RPi v4 (1.5 GHz)
 #define SMI_TIMING        1, 250, 500, 250, 31, 63, 31   // 1000 (roughly 1.5MHz)
 #else                                           // Timings for RPi v0-3 (1 GHz)
-#define SMI_TIMING        28, 8, 8, 8, 1, 1, 1   // 670 (roughly 1.49MHz)
+#define SMI_TIMING        28, 8, 8, 8, 2, 2, 2   // 670 (roughly 1.49MHz)
 #endif
 
 #define REQUEST_THRESH  2   // DMA request threshold
 #define DMA_CHAN        10  // DMA channel to use
 			    //
 // Number of samples to be captured
-#define NSAMPLES        500
+#define NSAMPLES        1024
 
 // Bus state definitions for USB
 #define JSTATE 0x01
@@ -90,7 +90,7 @@
 #define ARRAY_SIZE     256     //Size of data array
 #define SMI_DATA_WIDTH 8       //8-bit or 16-bit SMI transfers
 
-uint8_t syncData[8] = {16,1,16,1,16,1,16,16}, eopData[4] = {0,0,1,1};
+uint8_t syncData[8] = {16,1,16,1,16,1,16,16}, eopData[4] = {0,0,1,1};//{0,0,1,1};
 uint8_t packetData[8] = {0x00,0x05,0x0C,0x00,0x00,0x00,0x00,0x00};
 
 // Structures for mapped I/O devices, and non-volatile memory
@@ -134,7 +134,7 @@ uint8_t create_data_packet(uint8_t pid, uint8_t *data, uint8_t len, uint8_t *out
 uint32_t *setup_smi_dma(MEM_MAP *mp, int nsamp, int mode);
 void dump_buffer(uint8_t *buffer, int len);
 void mode_word(uint32_t *wp, int n, uint32_t mode);
-void reset_bus(MEM_MAP *mp);
+void reset_bus();
 
 // USB GPIO PIN MAPPINGS
 // (D- 8 (SMI0), D+ 12 (SMI4))
@@ -150,7 +150,7 @@ void reset_bus(MEM_MAP *mp);
 
 int main(int argc, char *argv[]) {
     
-    int len = 0, lenTwo = 0;
+    int len = 0, lenTwo = 0, waitTime = 0;
     signal(SIGINT, terminate);
     /*
     for(int i=0; i < ARRAY_SIZE; i++) {
@@ -161,7 +161,7 @@ int main(int argc, char *argv[]) {
     map_devices();
     init_smi(SMI_DATA_WIDTH, SMI_TIMING); //setup SMI registers for DMA TX.
     map_uncached_mem(&vc_mem, VC_MEM_SIZE); //map GPIO, DMA, and SMI registers into virtual mem (user space)
-    reset_bus(&vc_mem); //Trigger USB bus reset (required for connected devices to respond to commands)
+    reset_bus(); //Trigger USB bus reset (required for connected devices to respond to commands)
     len = create_token_packet(SETUP,0,0, packetBuffer);
     len = enc_nrzi(tx_data, packetBuffer, len, 0);
     lenTwo = create_data_packet(DATA0, packetData, 8, packetBuffer);
@@ -172,52 +172,27 @@ int main(int argc, char *argv[]) {
     txdata = setup_smi_dma(&vc_mem, len, 1); //setup DMA for SMI DMA TX.
     memcpy((uint8_t*)txdata, tx_data, len); //copy data from prep buffer to DMA transmission buffer.
     start_smi(&vc_mem); //actually start the SMI transfer
-    usleep(1);
-    while (dma_active(DMA_CHAN)){}; // Wait for TX to finish
-    printf("Initial DMA Finished\n"); //Required for delay (for some reasons)
-    rxbuff = setup_smi_dma(&vc_mem, NSAMPLES, 0); //Init SMI for read
-    start_smi(&vc_mem); //actually start the SMI transfer
-    usleep(1);
-    while (dma_active(DMA_CHAN)){}; // Wait for RX to finish
-    //printf("Secondary DMA Finished\n");
-    adc_dma_end(rxbuff, sample_data, NSAMPLES);
-    dump_buffer(sample_data, NSAMPLES);
+    while (!smi_cs->done){waitTime++;};
+    smi_cs->write = 0;
+    smi_cs->start = 1;
+    smi_l->len = 1024 * sizeof(uint8_t);
+    printf("Wait Time: %d\n", waitTime);
+    len = adc_dma_end(txdata, sample_data, NSAMPLES);
+    dump_buffer(sample_data, len);
     printf("\n\n\n");
     terminate(0);
     return(0);
 }
+/*
 
-void reset_bus(MEM_MAP *mp) { // Uses DMA because I could not get direct register writes from the CPU to work
-    //DMA_CB *cbs=mp->virt;
-    //uint32_t modes[4], i;
+IMPORTANT: try and speed this up by using DMA to write directly to SMI cs register to initialize and set modes
 
-    /*
-    for (i=0; i<2; i++) // Get current pin mode values
-        modes[i] = modes[i+2] = *REG32(gpio_regs, GPIO_MODE0 + i*4);
-    mode_word(&modes[0], 8, GPIO_ALT1);// GPIO 8: Ctrl register 0 position 8
-    mode_word(&modes[1], 2, GPIO_ALT1);// GPIO 12: Ctrl register 1 position 2
-    */
-    
-    gpio_mode(8, GPIO_OUT);
-    gpio_mode(12, GPIO_OUT);
-    gpio_out(8, 0);
-    gpio_out(12, 0);
-    usleep(13000);
-    gpio_mode(8, GPIO_IN);
-    gpio_mode(12, GPIO_IN);
-    gpio_pull(8, 0);
-    gpio_pull(12, 0);
-    usleep(10000);
-    printf("Shabingus\n");
-
-}
-
+*/
 // Set up SMI transfers using DMA
-// the ADC "equivalent" of this is adc_dma_start
 // potential garbage collection issues with "dmabuffer"
 uint32_t *setup_smi_dma(MEM_MAP *mp, int nsamp, int mode) {
     DMA_CB *cbs=mp->virt;
-    uint32_t *data=(uint32_t *)(cbs+4), *modes=data+0x10;
+    uint32_t *data=(uint32_t *)(cbs+6), *modes=data+0x10;
     uint32_t *dmabuffer=data+0x40, i;
     // Get current mode register values, first two indexes are reserved for next step
     for (i=0; i<2; i++)
@@ -233,33 +208,30 @@ uint32_t *setup_smi_dma(MEM_MAP *mp, int nsamp, int mode) {
     smi_cs->write = mode;
     enable_dma(DMA_CHAN);
     // Set GPIO 8 and 12 to SMI mode (ALT1)
-    //cbs[0].ti = DMA_SRCE_DREQ | (DMA_SMI_DREQ << 16) | DMA_WAIT_RESP;
     cbs[0].ti = DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_WAIT_RESP;
-    cbs[0].tfr_len = 8; //usually 8, I set it to 4 to only toggle GPIO 8 (D-)
+    cbs[0].tfr_len = 8; // Spans both MODE0 and MODE1 registers
     cbs[0].srce_ad = MEM_BUS_ADDR(mp, modes);
     cbs[0].dest_ad = REG_BUS_ADDR(gpio_regs, GPIO_MODE0);
     cbs[0].next_cb = MEM_BUS_ADDR(mp, &cbs[1]);
-    switch(mode) {
-	    case 0: // Ctrl block to read from SMI
-	        cbs[1].ti = DMA_SRCE_DREQ | (DMA_SMI_DREQ << 16) | DMA_CB_DEST_INC;
-            cbs[1].tfr_len = nsamp * sizeof(uint8_t);
-            cbs[1].srce_ad = REG_BUS_ADDR(smi_regs, SMI_D);
-            cbs[1].dest_ad = MEM_BUS_ADDR(mp, dmabuffer);
-            cbs[1].next_cb = MEM_BUS_ADDR(mp, &cbs[2]);
-            break;
-        case 1: // Ctrl block to write to SMI
-            cbs[1].ti = DMA_DEST_DREQ | (DMA_SMI_DREQ << 16) | DMA_CB_SRCE_INC | DMA_WAIT_RESP;
-            cbs[1].tfr_len = nsamp * sizeof(uint8_t);
-            cbs[1].srce_ad = MEM_BUS_ADDR(mp, dmabuffer);
-            cbs[1].dest_ad = REG_BUS_ADDR(smi_regs, SMI_D);
-            cbs[1].next_cb = MEM_BUS_ADDR(mp, &cbs[2]);
-	    break;
-    }
+
+    cbs[1].ti = DMA_DEST_DREQ | (DMA_SMI_DREQ << 16) | DMA_CB_SRCE_INC | DMA_WAIT_RESP;
+    cbs[1].tfr_len = nsamp * sizeof(uint8_t);
+    cbs[1].srce_ad = MEM_BUS_ADDR(mp, dmabuffer);
+    cbs[1].dest_ad = REG_BUS_ADDR(smi_regs, SMI_D);
+    cbs[1].next_cb = MEM_BUS_ADDR(mp, &cbs[2]);
+
+    cbs[2].ti = DMA_SRCE_DREQ | (DMA_SMI_DREQ << 16) | DMA_CB_DEST_INC;
+    cbs[2].tfr_len = 1024 * sizeof(uint8_t);
+    cbs[2].srce_ad = REG_BUS_ADDR(smi_regs, SMI_D);
+    cbs[2].dest_ad = MEM_BUS_ADDR(mp, dmabuffer);
+    cbs[2].next_cb = MEM_BUS_ADDR(mp, &cbs[3]);
+
     // Set GPIO 8 and 12 to whatever mode they were in before (must be input to work properly)
-    cbs[2].ti = DMA_CB_SRCE_INC | DMA_CB_DEST_INC;
-    cbs[2].tfr_len = 8; //usually 8, I set to 4 for same reasons as above.
-    cbs[2].srce_ad = MEM_BUS_ADDR(mp, &modes[2]);
-    cbs[2].dest_ad = REG_BUS_ADDR(gpio_regs, GPIO_MODE0);
+    cbs[3].ti = DMA_CB_SRCE_INC | DMA_CB_DEST_INC;
+    cbs[3].tfr_len = 8; // Spans both MODE0 and MODE1 registers
+    cbs[3].srce_ad = MEM_BUS_ADDR(mp, &modes[2]);
+    cbs[3].dest_ad = REG_BUS_ADDR(gpio_regs, GPIO_MODE0);
+
     return(dmabuffer);
 }
 
@@ -274,13 +246,18 @@ void start_smi(MEM_MAP *mp) {
 // ADC DMA is complete, get data
 int adc_dma_end(void *buff, uint8_t *data, int nsamp) {
     uint8_t *bp = (uint8_t *)buff;
-    int i;
-
-    for (i=0; i<nsamp; i++)
-    {
-        *data++ = bp[i];
+    int packetSize=0, i=0;
+    while(bp[i]==JSTATE) {
+        i++;
     }
-    return(nsamp);
+    do {
+        if((bp[i]==bp[i+2])||(bp[i]==bp[i+3])) {
+            *data = bp[i];
+        }
+        i+=4;
+        packetSize++;
+    } while(*data++!=0);
+    return(packetSize);
 }
 
 uint8_t reverse_bits (uint8_t b) {
@@ -347,6 +324,9 @@ void dump_buffer(uint8_t *buffer, int len) {
             case KSTATE:
                 printf("K");
                 break;
+            case 17:
+                printf("1");
+                break;
             default:
             printf("Undefined Val: %d\n", buffer[i]);
         }
@@ -396,11 +376,13 @@ uint8_t enc_nrzi(uint8_t *outbuffer, uint8_t *inbuffer, uint32_t len, uint32_t o
     // pads the buffer to keep the DMA busy, DMA is used to set pin mode 
     // and if the buffer is not padded it will change the mode before the
     // important data is done being output
+    /*
     for(i=0; i<12; i++) {
         outbuffer++;
         txSize++;
  	    *outbuffer = JSTATE;
     }
+    */
     if(txSize%2) { //ensures an even number of bytes in TX buffer (for purposes of byte swap)
         outbuffer++;
         txSize++;
@@ -485,6 +467,19 @@ void terminate(int sig) {
     unmap_periph_mem(&dma_regs);
     unmap_periph_mem(&gpio_regs);
     exit(0);
+}
+
+void reset_bus() {
+    gpio_mode(8, GPIO_OUT); // Set pins to outputs
+    gpio_mode(12, GPIO_OUT);
+    gpio_out(8, 0); // Set pins to LOW state
+    gpio_out(12, 0);
+    usleep(13000); // Hold bus low for 13ms (USB spec states 10-20ms for reset)
+    gpio_mode(8, GPIO_IN); // Sets pins to inputs
+    gpio_mode(12, GPIO_IN);
+    gpio_pull(8, 0); // Enables weak pulldown resistors
+    gpio_pull(12, 0);
+    usleep(10000); // Allow up to 10ms for attached devices to "recover" (also in USB spec)
 }
 
 // Initialise SMI, given data width, time step, and setup/hold/strobe counts
