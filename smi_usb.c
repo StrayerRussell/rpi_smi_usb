@@ -216,11 +216,10 @@ int run_transcieve_cycle(void *trxbuffer, uint8_t *outbuffer, uint8_t *inbuffer,
     swap_bytes(outbuffer, outLen); // Fixes byte ordering issue
     memcpy((uint8_t*)trxbuffer, outbuffer, outLen); // Copy data from prep buffer to DMA transmission buffer.
     run_smi(&vc_mem, outLen, inLen, sendAck); // Actually start the SMI transfer
-    dump_buffer(trxbuffer, inLen);
-    printf("<--------------------------------------->\n");
+    //dump_buffer(trxbuffer, inLen);
+    //printf("<--------------------------------------->\n");
     inLen = parse_rx_data(trxbuffer, inbuffer, inLen); // Crop RX Buffer down to actual packet content.
     //dump_buffer(inbuffer, inLen);
-    printf("\n");
     return inLen;
 }
 
@@ -367,57 +366,52 @@ void run_smi(MEM_MAP *mp, uint16_t txCnt, uint16_t rxCnt, bool hostAck) {
 
 // ADC DMA is complete, get data
 int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
-    uint8_t *bp = (uint8_t *)buff, *tempBuff, crc=0, crcMask=0x80;
-    int packetSize=0, parsedSize=0, seqOnes=0, i=0;
-    //int jCnt=0, kCnt=0, zroCnt=0, oneCnt=0, i=0, maxCnt=0, maxVal=0;
-    while(bp[i]==JSTATE) {
-        i++;
-    }
-    printf("Rx Presamp Cnt: %d\n", i);
-    bp+=i;
+    uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01;
+    int packetSize=0, seqOnes=0, i=0;
     do {
-        data[packetSize] = findMode(bp, 4);
+        while(*bp==JSTATE)
+            bp++;
+        mode = findMode(bp, 4);
+    } while(mode == JSTATE);
+    //printf("Rx Presamp Cnt: %d\n", i);
+    bp+=28;
+    prevMode = findMode(bp, 4);
+    data[packetSize] = 0;
+    do {
+        i++;
         bp+=4;
-    } while(data[packetSize++]!=0);
-    printf("Shabingus\n");
-    packetSize-=2;
-    for(i=7; i<15; i++) {
-        if(data[i] == data[i+1]) {
-            printf("1");
-            crc = crc ^ crcMask;
-        } else { 
-            printf("0");
-        }
-        crcMask >>= 1;
-    }
-    printf("\n");
-    switch(crc) {
-        case ACK:
-            printf("ACK: ");
-            break;
-        case DATA0:
-        case DATA1:
-            printf("DATA: ");
-            break;
-        default:
-            printf("UNKNOWN PID: \n");
-            break;
-    }
-    for(i=i; i<packetSize; i++) {
         if(seqOnes > 5) {
-            i++;
-            seqOnes=0;
+            bp+=4;
+            seqOnes = 0;
         }
-        if(data[i] == data[i+1]) {
-            printf("1");
+        mode = findMode(bp, 4);
+        if(mode == prevMode) {
+            //printf("1");
+            data[packetSize] ^= mask;
             seqOnes++;
-        } else { 
-            printf("0");
-            seqOnes=0;
+        } else {
+            //printf("0");
+            seqOnes = 0;
         }
-        parsedSize++;
+        if(mask == 0x80) {
+            //printf("_");
+            mask = 0x01;
+            packetSize++;
+            data[packetSize] = 0;
+        } else {
+            mask<<=1;
+        }
+        prevMode = mode;
+    } while(mode!=0);
+    data[0] = reverse_bits(data[0]);
+    if(--i%8) {
+        printf("ERROR NONSTD DATA SIZE\n");
+        return 0;
     }
-    printf("\nParsed Size: %d\n", parsedSize);
+    for(i=0; i<packetSize; i++) {
+        printf("%x, ", data[i]);
+    }
+    printf("\nLen: %d\n", i);
     return(packetSize);
 }
 
@@ -505,7 +499,7 @@ void dump_buffer(uint8_t *buffer, int len) {
                 printf("1");
                 break;
             default:
-            printf("Undefined Val: %d\n", buffer[i]);
+            printf("%x, \n", buffer[i]);
         }
     }
     printf("\n");
