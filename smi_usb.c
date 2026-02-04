@@ -48,9 +48,11 @@
 #define SMI_TIMING        1, 250, 500, 250, 31, 63, 31   // 1000 (roughly 1.5MHz)
 #else                                           // Timings for RPi v0-3 (1 GHz)
 #define SMI_TIMING        28, 8, 8, 8, 1, 1, 1   // 1.49Mhz TX 6Mhz RX
+//#define SMI_TIMING        28, 8, 8, 8, 2, 2, 2   // 1.49Mhz TX 12Mhz RX
 #endif
 
 #define SAMPMULT 8 // Oversampling multiplier
+//#define SAMPMULT 4 // Oversampling multiplier
 
 #define REQUEST_THRESH  2   // DMA request threshold
 #define DMA_CHAN        10  // DMA channel to use
@@ -179,7 +181,7 @@ uint8_t findMode(uint8_t *buff, int size);
 
 int main(int argc, char *argv[]) {
     
-    int len = 0, rxSamp = (45 * SAMPMULT), outLen;
+    int len = 0, rxSamp = (45 * SAMPMULT), outLen, pollLen = (SAMPMULT * 105);
     signal(SIGINT, terminate);
     map_devices();
     map_uncached_mem(&vc_mem, VC_MEM_SIZE); //map GPIO, DMA, and SMI registers into virtual mem (user space)
@@ -221,7 +223,7 @@ int main(int argc, char *argv[]) {
     printf("\n--Get Hidc Data--\n");
     get_setup_data(rxBuff, reqHidcData, SETUP, 0x0C, 0x00, reqHidcData[6]);
     dump_hex(rxBuff, reqHidcData[6]);
-
+    
     printf("\n--Set Idle Data--\n");
     send_setup_data(setIdleData, 8, SETUP, 0x0C, 0x00);
 
@@ -233,21 +235,28 @@ int main(int argc, char *argv[]) {
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
 
-    /*
+    printf("\n--Set Leds Data--\n");
+    send_setup_data(setLedsData, 8, SETUP, 0x0C, 0x00);
+    
+    printf("--Check Leds Success--\n");
+    len = create_token_packet(packetBuff, IN, 0x0C, 0x00);
+    len = enc_nrzi(prepBuff, packetBuff, len, 0);
+    len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
+
     printf("--IDK what this one is for--\n");
     len = create_token_packet(packetBuff, IN, 0x0C, 0x00);
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
-    */
 
     printf("--Keyboard Initialized--\n");
-
+    
+    rxBuff[0] = rxBuff[2] = 0;
 
     while(1) {
         //printf("\n--Get Keyboard Report--\n");
         len = create_token_packet(packetBuff, IN, 0x0C, 0x01);
         len = enc_nrzi(prepBuff, packetBuff, len, 0);
-        outLen = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, 840, true);
+        outLen = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, pollLen, true);
         switch(outLen) {
             case NOPKTERR:
                 printf("No Packet Error\n");
@@ -261,16 +270,16 @@ int main(int argc, char *argv[]) {
             case NAKRESP:
                 //printf("NAK\n");
             default:
-                if(rxBuff[2] != 0) {
+                if((rxBuff[2] != 0) || (rxBuff[0])) {
                     printf("Kbd Rprt: ");
-                    dump_hex(rxBuff, 10);
+                    dump_hex(rxBuff, 8);
                 }
                 break;
         }
+        //rxBuff[0] = rxBuff[2] = 0;
         outLen = 0;
-        usleep(12000);
+        usleep(24000);
     }
-
     printf("\n");
     terminate(0);
     return(0);
@@ -299,35 +308,45 @@ int send_setup_data(uint8_t *outData, int totalBytes, uint8_t pid, uint8_t addr,
 
 int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr, uint8_t endpt, int totalBytes) {
     uint8_t prepBuff[ARRAY_SIZE], packetBuff[ARRAY_SIZE], *dataStartPtr;
-    int len, outLen=0, bytesCollected, byteDiff, rxSamp, byteSamples, samplesOffset, maxSamples;
+    int len, outLen=0, byteDiff, rxSamp, byteSamples, samplesOffset, maxSamples, reqPackets, i;
     byteSamples = 8 * SAMPMULT;
     samplesOffset = 43 * SAMPMULT;
     maxSamples = (byteSamples * 8) + samplesOffset;
+    reqPackets = (totalBytes + (8 - 1))/8;
+    uint8_t rxSuccess[reqPackets];
     dataStartPtr = inData;
+    byteDiff = totalBytes % 8;
+    for(i=0; i<reqPackets; i++)
+        rxSuccess[i] = 0x00;
     while(outLen != totalBytes) {
+        printf("Desired Len: %d\n", totalBytes);
         send_setup_data(outData, 8, pid, addr, endpt);
-        bytesCollected = 0;
         inData = dataStartPtr;
-        while(bytesCollected < totalBytes) {
-            usleep(10000);
-            byteDiff = totalBytes - bytesCollected;
-            rxSamp = (byteDiff > 8) ? maxSamples : (byteSamples * byteDiff) + samplesOffset;
+        for(i=0; i<reqPackets; i++) {
+            //usleep(5000);
+            rxSamp = (i != (reqPackets-1)) ? maxSamples : (byteSamples * byteDiff) + samplesOffset;
             len = create_token_packet(packetBuff, IN, addr, endpt);
             len = enc_nrzi(prepBuff, packetBuff, len, 0);
             len = run_transcieve_cycle(smiBuff, prepBuff, inData, len, rxSamp, true);
-            switch(len) {
-                case SIZEERR:
-                case CRCERR:
-                case NOPKTERR:
-                    outLen = 0;
-                    break;
-                default:
-                    outLen += len;
-                    break;
+            if(rxSuccess[i] == 0) {
+                switch(len) {
+                    case 1 ... 8:
+                        outLen += len;
+                        rxSuccess[i] = 0xFF;
+                        printf("PKTSUCCESS outLen: %d\n", outLen);
+                        break;
+                    case SIZEERR:
+                    case CRCERR:
+                    case NOPKTERR:
+                        break;
+                    default:
+                        printf("UNKNOWNERR\n");
+                        break;
+                }
             }
             inData += 8;
-            bytesCollected += 8; // Max number of bytes in packet, close enough to get number of required packets.
         }
+        dump_hex(rxSuccess, reqPackets);
     }
     return outLen;
 }
@@ -485,17 +504,20 @@ void run_smi(MEM_MAP *mp, uint16_t txCnt, uint16_t rxCnt, bool hostAck) {
 // ADC DMA is complete, get data
 int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
     uint16_t rxCrc=0, calCrc=0;
-    uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01, pid;
+    uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01, pid, temp[11];
     int packetSize=0, seqOnes=0, i=0;
     do {
+        i++;
         while(*bp==JSTATE)
             bp++;
         mode = findMode(bp, SAMPMULT);
-    } while(mode == JSTATE);
+    } while((mode == JSTATE) && (i < nsamp));
+    if(i == nsamp)
+        return NOPKTERR; 
     //printf("Rx Presamp Cnt: %d\n", i);
     bp+=(7 * SAMPMULT);
     prevMode = findMode(bp, SAMPMULT);
-    data[packetSize] = 0;
+    temp[packetSize] = 0;
     i = 0;
     do {
         i++;
@@ -508,7 +530,7 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
         mode = findMode(bp, SAMPMULT);
         if(mode == prevMode) {
             //printf("1");
-            data[packetSize] ^= mask;
+            temp[packetSize] ^= mask;
             seqOnes++;
         } else {
             //printf("0");
@@ -518,7 +540,7 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
             //printf("_");
             mask = 0x01;
             packetSize++;
-            data[packetSize] = 0;
+            temp[packetSize] = 0;
         } else {
             mask<<=1;
         }
@@ -529,8 +551,8 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
         printf("SIZEERR: %d\n", i);
         return SIZEERR;
     }
-    rxCrc = data[packetSize-1] << 8 | data[packetSize-2];
-    pid = reverse_bits(*data);
+    rxCrc = temp[packetSize-1] << 8 | temp[packetSize-2];
+    pid = reverse_bits(*temp);
     switch(pid) {
         case ACK:
             //printf("ACK\n");
@@ -545,14 +567,18 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
             packetSize -= 3;
 
     }
-    calCrc = crc16(data+1, packetSize);
+    calCrc = crc16(temp+1, packetSize);
     if(calCrc != rxCrc)
         return CRCERR;
 
+    //temp++;
+    //memcpy(data, &temp[1], packetSize);
+    
     for(i=0; i<packetSize; i++) {
-        data[i] = data[i+1];
-        //printf("%x, ", data[i]);
+        data[i] = temp[i+1];
+        //printf("%x, ", temp[i]);
     }
+    
     //printf("\n");
     return(packetSize);
 }
