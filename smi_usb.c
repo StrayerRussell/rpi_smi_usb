@@ -95,7 +95,23 @@
 #define CRCERR     0xFC
 #define NOPKTERR   0xFB
 
+// Descriptor Definitions
+#define DEVDESCLEN  0x12
+#define CONFDESCLEN 0x09
+#define STRDESCLEN  0x02
 
+#define GETSTAT 0x00
+#define CLRFEAT 0x01
+#define SETFEAT 0x03
+#define SETADDR 0x05
+#define GETDESC 0x06
+#define SETDESC 0x07
+#define GETCONF 0x08
+#define SETCONF 0x09
+
+#define SETRPRT 0x09
+#define SETIDLE 0x0A
+#define SETPTCL 0x0B
 
 // User defined paramaters
 
@@ -104,21 +120,145 @@
 
 // Statif Definitions for stitching packets together
 static uint8_t syncData[8] = {16,1,16,1,16,1,16,16}, eopData[4] = {0,0,1,1};
-static uint8_t ackData[32] = {1,16,1,16,1,16,16,16,1,1,1,16,16,1,16,16,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1}; //Pads to 32 samples
+static uint8_t ackData[32] = {1,16,1,16,1,16,16,16,1,1,1,16,16,1,16,16,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1}; // pads to 32 samps
 // Data payloads for enumeration process
-static uint8_t setAddrData[8] = {0x00,0x05,0x0C,0x00,0x00,0x00,0x00,0x00};
-static uint8_t reqDevDesc[8] =  {0x80,0x06,0x00,0x01,0x00,0x00,0x12,0x00};
-static uint8_t reqConfDesc[8] = {0x80,0x06,0x00,0x02,0x00,0x00,0x09,0x00};
-static uint8_t reqConfData[8] = {0x80,0x06,0x00,0x02,0x00,0x00,0x3b,0x00};
-static uint8_t setConfData[8] = {0x00,0x09,0x01,0x00,0x00,0x00,0x00,0x00};
-static uint8_t reqHidcData[8] = {0x81,0x06,0x00,0x22,0x00,0x00,0x36,0x00};
-static uint8_t setIdleData[8] = {0x21,0x0A,0x00,0x06,0x00,0x00,0x00,0x00};
-static uint8_t setPtclData[8] = {0x21,0x0B,0x01,0x00,0x00,0x00,0x00,0x00};
-static uint8_t setLedsData[8] = {0x21,0x09,0x00,0x02,0x00,0x00,0x01,0x00};
+//static uint8_t setAddrData[8] = {0x00,0x05,0x01,0x00,0x00,0x00,0x00,0x00};
+//static uint8_t reqDevDesc[8] =  {0x80,0x06,0x00,0x01,0x00,0x00,0x12,0x00};
+//static uint8_t reqStrDesc[8] =  {0x80,0x06,0x02,0x03,0x09,0x04,0x02,0x00};
+//static uint8_t reqStrData[8] =  {0x80,0x06,0x02,0x03,0x09,0x04,0x1A,0x00};
+//static uint8_t reqConfDesc[8] = {0x80,0x06,0x00,0x02,0x00,0x00,0x09,0x00};
+//static uint8_t reqConfData[8] = {0x80,0x06,0x00,0x02,0x00,0x00,0x3b,0x00};
+//static uint8_t setConfData[8] = {0x00,0x09,0x01,0x00,0x00,0x00,0x00,0x00};
+//static uint8_t reqHidcData[8] = {0x81,0x06,0x00,0x22,0x00,0x00,0x36,0x00};
+//static uint8_t setIdleData[8] = {0x21,0x0A,0x00,0x06,0x00,0x00,0x00,0x00};
+//static uint8_t setPtclData[8] = {0x21,0x0B,0x01,0x00,0x00,0x00,0x00,0x00};
+//static uint8_t setLedsData[8] = {0x21,0x09,0x00,0x02,0x00,0x00,0x01,0x00};
 
-// Strings are optional, might implement later
-static uint8_t reqStrDesc[8] =  {0x80,0x06,0x02,0x03,0x09,0x04,0x02,0x00};
-static uint8_t reqStrData[8] =  {0x80,0x06,0x02,0x03,0x09,0x04,0x1A,0x00};
+union devDesc {
+    struct {
+        uint8_t  len;
+        uint8_t  descType;
+        uint16_t ver;
+        uint8_t  devClass;
+        uint8_t  devSubClass;
+        uint8_t  devPrtcl;
+        uint8_t  maxPktSize;
+        uint16_t venId;
+        uint16_t prodId;
+        uint16_t bcdDev;
+        uint16_t iMmf;
+        uint8_t  iProd;
+        uint8_t  iSerNum;
+        uint8_t  bNumConfigs;
+    };
+    uint8_t data[18];
+};
+
+union confDesc {
+    struct {
+        uint8_t  len;
+        uint8_t  descType;
+        uint16_t totalLen;
+        uint8_t  numIfaces;
+        uint8_t  confVal;
+        uint8_t  confNum;
+        uint8_t  attrs;
+        uint8_t  maxPwr;
+    };
+    uint8_t data[9];
+};
+
+union ifaceDesc {
+    struct {
+        uint8_t len;
+        uint8_t descType;
+        uint8_t ifaceNum;
+        uint8_t altSetting;
+        uint8_t numEndpts;
+        uint8_t ifaceClass;
+        uint8_t ifaceSubClass;
+        uint8_t ifacePrtcl;
+        uint8_t iIface;
+    };
+    uint8_t data[9];
+};
+
+
+union hidDesc {
+    struct {
+        uint8_t  len;
+        uint8_t  descType;
+        uint16_t ver;
+        uint8_t  country;
+        uint8_t  numDesc;
+        uint8_t  hidDescType;
+        uint8_t  padding; //pads num bytes before final uint16_t for assignment reasons;
+        uint16_t descLen;
+    };
+    uint8_t data[10];
+};
+
+
+union endptDesc {
+    struct {
+        uint8_t  len;
+        uint8_t  descType;
+        uint8_t  endptAddr;
+        uint8_t  attrs;
+        uint16_t maxPktSize;
+        uint8_t  interval;
+    };
+    uint8_t data[7];
+};
+
+union strDesc {
+    struct {
+        uint8_t  len;
+        uint8_t  descType;
+    };
+    uint8_t data[2];
+};
+
+union strData {
+    struct {
+        uint8_t len;
+        uint8_t descType;
+        uint8_t string[253];
+    };
+    uint8_t data[255];
+};
+
+union confData {
+    struct {
+        union confDesc confDesc;
+        union ifaceDesc ifaceDesc;
+        union hidDesc hidDesc;
+        union endptDesc endptDesc;
+    };
+    uint8_t data[38];
+};
+
+// TODO: Modify this to be able to handle multiple interfaces and endpoints per device
+struct devInfo {
+    union devDesc   devDesc;
+    union strDesc mfrStrDesc;
+    union strData mfrStrData;
+    union strDesc prodStrDesc;
+    union strData prodStrData;
+    union confData confData;
+    uint8_t state;
+};  
+
+union setupPacket {
+    struct {
+        uint8_t  type;
+        uint8_t  req;
+        uint16_t val;
+        uint16_t index;
+        uint16_t len;
+    };
+    uint8_t data[8];
+};
 
 // Structures for mapped I/O devices, and non-volatile memory
 extern MEM_MAP gpio_regs, dma_regs;
@@ -161,11 +301,15 @@ uint32_t *setup_smi_dma(MEM_MAP *mp, uint32_t **txSizePtr, uint32_t **rxSizePtr)
 void dump_buffer(uint8_t *buffer, int len);
 void mode_word(uint32_t *wp, int n, uint32_t mode);
 int run_transcieve_cycle(void *outbuffer, uint8_t *prepbuffer, uint8_t *inbuffer, int outLen, int inLen, bool sendAck);
-int send_setup_data(uint8_t *outbuffer, int totalBytes, uint8_t pid, uint8_t addr, uint8_t endpt);
-int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr, uint8_t endpt, int totalBytes);
+int send_setup_data(uint8_t *outbuffer, int totalBytes, uint8_t pid, uint8_t addr);
+int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr, int totalBytes);
 void reset_bus();
 void dump_hex(uint8_t *buffer, int len);
 uint8_t findMode(uint8_t *buff, int size);
+union setupPacket create_setup_payload(uint8_t type, uint8_t req, uint16_t val, uint16_t index, uint16_t len);
+union confData parse_config_data(uint8_t *buff, int len);
+void dump_config_data();
+//struct bswap_payload_contents();
 
 // USB GPIO PIN MAPPINGS
 // (D- 8 (SMI0), D+ 12 (SMI4))
@@ -179,9 +323,13 @@ uint8_t findMode(uint8_t *buff, int size);
 // KJKJKJKK
 // 16,1,16,1,16,1,16,16
 
+struct devInfo kbdInfo;
+union setupPacket setupBuffer;
+
 int main(int argc, char *argv[]) {
     
     int len = 0, rxSamp = (45 * SAMPMULT), outLen, pollLen = (SAMPMULT * 105);
+
     signal(SIGINT, terminate);
     map_devices();
     map_uncached_mem(&vc_mem, VC_MEM_SIZE); //map GPIO, DMA, and SMI registers into virtual mem (user space)
@@ -190,99 +338,183 @@ int main(int argc, char *argv[]) {
     reset_bus(); //Trigger USB bus reset (required for connected devices to respond to commands)
 
     printf("--Set Device Address--\n");
-    send_setup_data(setAddrData, 8, SETUP, 0x00, 0x00);
+    setupBuffer = create_setup_payload(0x00, SETADDR, 0x0100, 0x00, 0x00);
+    send_setup_data(setupBuffer.data, 8, SETUP, 0x00);
 
     printf("--Check Device Address--\n");
     len = create_token_packet(packetBuff, IN, 0x00, 0x00);
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
-    
+
     printf("\n--Get Dev Desc--\n");
-    get_setup_data(rxBuff, reqDevDesc, SETUP, 0x0C, 0x00, reqDevDesc[6]);
-    dump_hex(rxBuff, reqDevDesc[6]);
+    setupBuffer = create_setup_payload(0x80, GETDESC, 0x0001, 0x00, DEVDESCLEN);
+    get_setup_data(kbdInfo.devDesc.data, setupBuffer.data, SETUP, 0x01, DEVDESCLEN);
+    dump_hex(kbdInfo.devDesc.data, DEVDESCLEN);
     
-    printf("\n--Get Str Desc--\n");
-    get_setup_data(rxBuff, reqStrDesc, SETUP, 0x0C, 0x00, reqStrDesc[6]);
-    dump_hex(rxBuff, reqStrDesc[6]);
+    printf("Usb Ver: %x\n", kbdInfo.devDesc.ver);
+    printf("Vndr Id: %x\n", kbdInfo.devDesc.venId);
+    printf("Prod Id: %x\n", kbdInfo.devDesc.prodId);
+    
+    printf("\n--Get Prod Str Desc--\n");
+    setupBuffer = create_setup_payload(0x80, GETDESC, 0x0203, 0x0904, STRDESCLEN);
+    get_setup_data(kbdInfo.prodStrDesc.data, setupBuffer.data, SETUP, 0x01, STRDESCLEN);
+    dump_hex(kbdInfo.prodStrDesc.data, STRDESCLEN);
    
-    printf("\n--Get Str Data--\n");
-    get_setup_data(rxBuff, reqStrData, SETUP, 0x0C, 0x00, reqStrData[6]);
-    dump_hex(rxBuff, reqStrData[6]);    
-    
+    printf("\n--Get Prod Str Data--\n");
+    setupBuffer = create_setup_payload(0x80, GETDESC, 0x0203, 0x0904, kbdInfo.prodStrDesc.len);
+    get_setup_data(kbdInfo.prodStrData.data, setupBuffer.data, SETUP, 0x01, kbdInfo.prodStrDesc.len);
+    dump_hex(kbdInfo.prodStrData.data, kbdInfo.prodStrDesc.len);
+
     printf("\n--Get Conf Desc--\n");
-    get_setup_data(rxBuff, reqConfDesc, SETUP, 0x0C, 0x00, reqConfDesc[6]);
-    dump_hex(rxBuff, reqConfDesc[6]);
+    setupBuffer = create_setup_payload(0x80, GETDESC, 0x02, 0x00, CONFDESCLEN);
+    get_setup_data(kbdInfo.confData.confDesc.data, setupBuffer.data, SETUP, 0x01, CONFDESCLEN);
+    dump_hex(kbdInfo.confData.confDesc.data, CONFDESCLEN);
+    printf("Conf Len: %x\n", kbdInfo.confData.confDesc.len);
     
     printf("\n--Get Conf Data--\n");
-    get_setup_data(rxBuff, reqConfData, SETUP, 0x0C, 0x00, reqConfData[6]);
-    dump_hex(rxBuff, reqConfData[6]);
+    setupBuffer = create_setup_payload(0x80, GETDESC, 0x02, 0x00, kbdInfo.confData.confDesc.totalLen);
+    get_setup_data(rxBuff, setupBuffer.data, SETUP, 0x01, kbdInfo.confData.confDesc.totalLen);
+    kbdInfo.confData = parse_config_data(rxBuff, kbdInfo.confData.confDesc.totalLen);
+    dump_hex(rxBuff, kbdInfo.confData.confDesc.totalLen);
+    dump_config_data();
 
     printf("\n--Set Conf Data--\n");
-    send_setup_data(setConfData, 8, SETUP, 0x0C, 0x00);
+    setupBuffer = create_setup_payload(0x00, SETCONF, 0x0100, 0x00, 0x00);
+    send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
 
     printf("\n--Get Hidc Data--\n");
-    get_setup_data(rxBuff, reqHidcData, SETUP, 0x0C, 0x00, reqHidcData[6]);
-    dump_hex(rxBuff, reqHidcData[6]);
-    
-    printf("\n--Set Idle Data--\n");
-    send_setup_data(setIdleData, 8, SETUP, 0x0C, 0x00);
+    setupBuffer = create_setup_payload(0x81, GETDESC, 0x0022, 0x00, kbdInfo.confData.hidDesc.descLen);
+    get_setup_data(rxBuff, setupBuffer.data, SETUP, 0x01, kbdInfo.confData.hidDesc.descLen);
+    dump_hex(rxBuff, kbdInfo.confData.hidDesc.descLen);
 
+    printf("\n--Set Idle Data--\n");
+    setupBuffer = create_setup_payload(0x21, SETIDLE, 0x0001, 0x00, 0x00); // 0x0006
+    send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
+   
     printf("\n--Set Ptcl Data--\n");
-    send_setup_data(setPtclData, 8, SETUP, 0x0C, 0x00);
-    
+    setupBuffer = create_setup_payload(0x21, SETPTCL, 0x0000, 0x00, 0x00); //0x0100
+    send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
+
     printf("--Check Protocol Success--\n");
-    len = create_token_packet(packetBuff, IN, 0x0C, 0x00);
+    len = create_token_packet(packetBuff, IN, 0x01, 0x00);
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
 
     printf("\n--Set Leds Data--\n");
-    send_setup_data(setLedsData, 8, SETUP, 0x0C, 0x00);
+    setupBuffer = create_setup_payload(0x00, SETRPRT, 0x0002, 0x00, 0x01);
+    send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
     
     printf("--Check Leds Success--\n");
-    len = create_token_packet(packetBuff, IN, 0x0C, 0x00);
+    len = create_token_packet(packetBuff, IN, 0x01, 0x00);
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
 
     printf("--IDK what this one is for--\n");
-    len = create_token_packet(packetBuff, IN, 0x0C, 0x00);
+    len = create_token_packet(packetBuff, IN, 0x01, 0x00);
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
 
     printf("--Keyboard Initialized--\n");
     
-    rxBuff[0] = rxBuff[2] = 0;
-
+    len = create_token_packet(packetBuff, IN, 0x01, 0x01);
+    len = enc_nrzi(prepBuff, packetBuff, len, 0);
+    int pollInterval = (kbdInfo.confData.endptDesc.interval * 1000);
+    /*
+    Does not automatically recover after size err because keyboard only sends a true "report"
+    If the state of the pressed keys have changed. If the state has not changed it responds with
+    a NAK. this means that if the packet communicating a key press gets corrupted the keyboard
+    will not send a followup saying which key is being pressed only NAK untill another change
+    occurs. I need to fix this.
+    */
     while(1) {
         //printf("\n--Get Keyboard Report--\n");
-        len = create_token_packet(packetBuff, IN, 0x0C, 0x01);
-        len = enc_nrzi(prepBuff, packetBuff, len, 0);
+        rxBuff[0] = rxBuff[2] = 0;
         outLen = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, pollLen, true);
         switch(outLen) {
             case NOPKTERR:
-                printf("No Packet Error\n");
+                //printf("No Packet Error\n");
                 break;
             case SIZEERR:
-                printf("Size Error\n");
+                //printf("Size Error\n");
                 break;
             case CRCERR:
-                printf("Crc Error\n");
+                //printf("Crc Error\n");
                 break;
             case NAKRESP:
                 //printf("NAK\n");
             default:
-                if((rxBuff[2] != 0) || (rxBuff[0])) {
+                //if(true) {
+                if((rxBuff[0] != 0) || (rxBuff[2] != 0)) {
                     printf("Kbd Rprt: ");
                     dump_hex(rxBuff, 8);
                 }
                 break;
         }
-        //rxBuff[0] = rxBuff[2] = 0;
-        outLen = 0;
-        usleep(24000);
+        //outLen = 0;
+        usleep(pollInterval);
     }
     printf("\n");
     terminate(0);
     return(0);
+}
+
+void dump_config_data() {
+    printf("Conf Len: %x\n", kbdInfo.confData.confDesc.len);
+    printf("Conf Desc Type: %x\n", kbdInfo.confData.confDesc.descType);
+    printf("Conf Total Len: %x\n", kbdInfo.confData.confDesc.totalLen);
+    printf("Conf Num Ifaces: %x\n", kbdInfo.confData.confDesc.numIfaces);
+    printf("Conf Conf Value: %x\n", kbdInfo.confData.confDesc.confVal);
+    printf("Conf String Index: %x\n", kbdInfo.confData.confDesc.confNum);
+    printf("Conf Attributes: %x\n", kbdInfo.confData.confDesc.attrs);
+    printf("Conf maxPwr: %x\n\n", kbdInfo.confData.confDesc.maxPwr);
+    printf("Iface Len: %x\n", kbdInfo.confData.ifaceDesc.len);
+    printf("Iface Desc Type: %x\n", kbdInfo.confData.ifaceDesc.descType);
+    printf("Iface Iface Num: %x\n", kbdInfo.confData.ifaceDesc.ifaceNum);
+    printf("Iface Alt Setting: %x\n", kbdInfo.confData.ifaceDesc.altSetting);
+    printf("Iface Num Endpts: %x\n", kbdInfo.confData.ifaceDesc.numEndpts);
+    printf("Iface Iface Class: %x\n", kbdInfo.confData.ifaceDesc.ifaceClass);
+    printf("Iface iface Subclass: %x\n", kbdInfo.confData.ifaceDesc.ifaceSubClass);
+    printf("Iface iface Protocol: %x\n", kbdInfo.confData.ifaceDesc.ifacePrtcl);
+    printf("Iface iIface: %x\n\n", kbdInfo.confData.ifaceDesc.iIface);
+    printf("Hid Len: %x\n", kbdInfo.confData.hidDesc.len);
+    printf("Hid Desc Type: %x\n", kbdInfo.confData.hidDesc.descType);
+    printf("Hid Ver: %x\n", kbdInfo.confData.hidDesc.ver);
+    printf("Hid Country: %x\n", kbdInfo.confData.hidDesc.country);
+    printf("Hid numDesc: %x\n", kbdInfo.confData.hidDesc.numDesc);
+    printf("Hid hidDescType: %x\n", kbdInfo.confData.hidDesc.hidDescType);
+    printf("Hid Desc Len: %x\n\n", kbdInfo.confData.hidDesc.descLen);
+    printf("Endpt Len: %x\n", kbdInfo.confData.endptDesc.len);
+    printf("Endpt Desc Type: %x\n", kbdInfo.confData.endptDesc.descType);
+    printf("Endpt Addr: %x\n", kbdInfo.confData.endptDesc.endptAddr);
+    printf("Endpt Attrs: %x\n", kbdInfo.confData.endptDesc.attrs);
+    printf("Endpt Max Pkt Size: %x\n", kbdInfo.confData.endptDesc.maxPktSize);
+    printf("Endpt Poll Interval: %x\n", kbdInfo.confData.endptDesc.interval);
+}
+
+union confData parse_config_data(uint8_t *buff, int len) {
+    // Improve to be less heuristic in future
+    union confData contents;
+    memcpy(contents.confDesc.data, buff, 9);
+    memcpy(contents.ifaceDesc.data, buff+9, 9);
+    memcpy(contents.hidDesc.data, buff+18, 10); // This and the following one are funky for byte alignment
+    memcpy(&contents.hidDesc.data[8], buff+25, 2);
+    memcpy(contents.endptDesc.data, buff+27, 7);
+    return contents;
+}
+
+union setupPacket create_setup_payload(uint8_t type, uint8_t req, uint16_t val, uint16_t index, uint16_t len) {
+    val = __builtin_bswap16(val);
+    index = __builtin_bswap16(index);
+    if(len > 255) // handle endianness
+        len = __builtin_bswap16(len);
+    union setupPacket payload;
+    payload.type = type;
+    payload.req = req;
+    payload.val = val;
+    payload.index = index;
+    payload.len = len;
+    //dump_hex(payload.data, 8);
+    return payload;
 }
 
 void dump_hex(uint8_t *buffer, int len) {
@@ -292,9 +524,9 @@ void dump_hex(uint8_t *buffer, int len) {
     printf("\n");
 }
 
-int send_setup_data(uint8_t *outData, int totalBytes, uint8_t pid, uint8_t addr, uint8_t endpt) { 
+int send_setup_data(uint8_t *outData, int totalBytes, uint8_t pid, uint8_t addr) { 
     // Only does a single data packet for now might fix later
-    uint8_t prepBuff[ARRAY_SIZE], packetBuff[ARRAY_SIZE];
+    uint8_t prepBuff[ARRAY_SIZE], packetBuff[ARRAY_SIZE], endpt = 0x00;
     int len=0, lenTwo, rxSamp = (45 * SAMPMULT);
     while(len != ACKRESP) {
         len = create_token_packet(packetBuff, pid, addr, endpt);
@@ -306,8 +538,8 @@ int send_setup_data(uint8_t *outData, int totalBytes, uint8_t pid, uint8_t addr,
     return 0;
 }
 
-int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr, uint8_t endpt, int totalBytes) {
-    uint8_t prepBuff[ARRAY_SIZE], packetBuff[ARRAY_SIZE], *dataStartPtr;
+int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr, int totalBytes) {
+    uint8_t prepBuff[ARRAY_SIZE], packetBuff[ARRAY_SIZE], *dataStartPtr, endpt=0x00;
     int len, outLen=0, byteDiff, rxSamp, byteSamples, samplesOffset, maxSamples, reqPackets, i;
     byteSamples = 8 * SAMPMULT;
     samplesOffset = 43 * SAMPMULT;
@@ -319,8 +551,8 @@ int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr,
     for(i=0; i<reqPackets; i++)
         rxSuccess[i] = 0x00;
     while(outLen != totalBytes) {
-        printf("Desired Len: %d\n", totalBytes);
-        send_setup_data(outData, 8, pid, addr, endpt);
+        //printf("Desired Len: %d\n", totalBytes);
+        send_setup_data(outData, 8, pid, addr);
         inData = dataStartPtr;
         for(i=0; i<reqPackets; i++) {
             //usleep(5000);
@@ -333,7 +565,7 @@ int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr,
                     case 1 ... 8:
                         outLen += len;
                         rxSuccess[i] = 0xFF;
-                        printf("PKTSUCCESS outLen: %d\n", outLen);
+                        //printf("PKTSUCCESS outLen: %d\n", outLen);
                         break;
                     case SIZEERR:
                     case CRCERR:
@@ -346,7 +578,7 @@ int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr,
             }
             inData += 8;
         }
-        dump_hex(rxSuccess, reqPackets);
+        //dump_hex(rxSuccess, reqPackets);
     }
     return outLen;
 }
@@ -568,8 +800,10 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
 
     }
     calCrc = crc16(temp+1, packetSize);
-    if(calCrc != rxCrc)
+    if(calCrc != rxCrc) {
+        //printf("CalCrc: %x, RxCrc: %x\n", calCrc, rxCrc);
         return CRCERR;
+    }
 
     //temp++;
     //memcpy(data, &temp[1], packetSize);
