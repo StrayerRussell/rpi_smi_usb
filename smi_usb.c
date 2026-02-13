@@ -27,7 +27,7 @@
 //                   Added raw Tx data test
 // v0.09 JPB 27/9/20 Added 16-channel option
 // v0.10 JPB 28/9/20 Corrected Pi Zero caching problem
-// v0.11 JPB 29/9/20 Added enable_dma before transfer (in case still active)
+// v0.11 JPB 29/9/20 Added enable_dmale before transfer (in case still active)
 //                   Corrected DMA nsamp value (was byte count)
 // v0.12 JPB 26/5/21 Corrected transfer length for 16-bit mode
 
@@ -88,14 +88,16 @@
 #define ERR      0x3C //0x0C
 #define SPLIT    0x1E //0x08
 #define PING     0x2D //0x04
+
 // Parse Assistance
 #define ACKRESP    0xFF
 #define NAKRESP    0xFE
 #define SIZEERR    0xFD
-#define CRCERR     0xFC
-#define NOPKTERR   0xFB
+#define PIDERR     0xFC
+#define CRCERR     0xFB
+#define NOPKTERR   0xFA
 
-// Descriptor Definitions
+// High Level USB Definitions
 #define DEVDESCLEN  0x12
 #define CONFDESCLEN 0x09
 #define STRDESCLEN  0x02
@@ -109,6 +111,10 @@
 #define GETCONF 0x08
 #define SETCONF 0x09
 
+// HID specific definitions
+#define GETRPRT 0x01
+#define GETIDLE 0x02
+#define GETPTCL 0x03
 #define SETRPRT 0x09
 #define SETIDLE 0x0A
 #define SETPTCL 0x0B
@@ -354,25 +360,25 @@ int main(int argc, char *argv[]) {
     printf("Usb Ver: %x\n", kbdInfo.devDesc.ver);
     printf("Vndr Id: %x\n", kbdInfo.devDesc.venId);
     printf("Prod Id: %x\n", kbdInfo.devDesc.prodId);
-    
+
     printf("\n--Get Prod Str Desc--\n");
     setupBuffer = create_setup_payload(0x80, GETDESC, 0x0203, 0x0904, STRDESCLEN);
     get_setup_data(kbdInfo.prodStrDesc.data, setupBuffer.data, SETUP, 0x01, STRDESCLEN);
     dump_hex(kbdInfo.prodStrDesc.data, STRDESCLEN);
-   
+
     printf("\n--Get Prod Str Data--\n");
     setupBuffer = create_setup_payload(0x80, GETDESC, 0x0203, 0x0904, kbdInfo.prodStrDesc.len);
     get_setup_data(kbdInfo.prodStrData.data, setupBuffer.data, SETUP, 0x01, kbdInfo.prodStrDesc.len);
     dump_hex(kbdInfo.prodStrData.data, kbdInfo.prodStrDesc.len);
 
     printf("\n--Get Conf Desc--\n");
-    setupBuffer = create_setup_payload(0x80, GETDESC, 0x02, 0x00, CONFDESCLEN);
+    setupBuffer = create_setup_payload(0x80, GETDESC, 0x0002, 0x00, CONFDESCLEN);
     get_setup_data(kbdInfo.confData.confDesc.data, setupBuffer.data, SETUP, 0x01, CONFDESCLEN);
     dump_hex(kbdInfo.confData.confDesc.data, CONFDESCLEN);
     printf("Conf Len: %x\n", kbdInfo.confData.confDesc.len);
     
     printf("\n--Get Conf Data--\n");
-    setupBuffer = create_setup_payload(0x80, GETDESC, 0x02, 0x00, kbdInfo.confData.confDesc.totalLen);
+    setupBuffer = create_setup_payload(0x80, GETDESC, 0x0002, 0x00, kbdInfo.confData.confDesc.totalLen);
     get_setup_data(rxBuff, setupBuffer.data, SETUP, 0x01, kbdInfo.confData.confDesc.totalLen);
     kbdInfo.confData = parse_config_data(rxBuff, kbdInfo.confData.confDesc.totalLen);
     dump_hex(rxBuff, kbdInfo.confData.confDesc.totalLen);
@@ -387,12 +393,8 @@ int main(int argc, char *argv[]) {
     get_setup_data(rxBuff, setupBuffer.data, SETUP, 0x01, kbdInfo.confData.hidDesc.descLen);
     dump_hex(rxBuff, kbdInfo.confData.hidDesc.descLen);
 
-    printf("\n--Set Idle Data--\n");
-    setupBuffer = create_setup_payload(0x21, SETIDLE, 0x0001, 0x00, 0x00); // 0x0006
-    send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
-   
     printf("\n--Set Ptcl Data--\n");
-    setupBuffer = create_setup_payload(0x21, SETPTCL, 0x0000, 0x00, 0x00); //0x0100
+    setupBuffer = create_setup_payload(0x21, SETPTCL, 0x0000, 0x00, 0x00); //Boot: 0x0000 Report: 0x0100
     send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
 
     printf("--Check Protocol Success--\n");
@@ -400,8 +402,22 @@ int main(int argc, char *argv[]) {
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
 
+    printf("\n--Get Ptcl Data--\n");
+    setupBuffer = create_setup_payload(0xA1, GETPTCL, 0x0000, 0x00, 0x01);
+    get_setup_data(rxBuff, setupBuffer.data, SETUP, 0x01, 1);
+    dump_hex(rxBuff, 1);
+
+    printf("\n--Set Idle Data--\n");
+    setupBuffer = create_setup_payload(0x21, SETIDLE, 0x0006, 0x00, 0x00); // 0x0006
+    send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
+
+    printf("\n--Get Idle Data--\n");
+    setupBuffer = create_setup_payload(0xA1, GETIDLE, 0x0000, 0x00, 0x01);
+    get_setup_data(rxBuff, setupBuffer.data, SETUP, 0x01, 1);
+    dump_hex(rxBuff, 1);
+
     printf("\n--Set Leds Data--\n");
-    setupBuffer = create_setup_payload(0x00, SETRPRT, 0x0002, 0x00, 0x01);
+    setupBuffer = create_setup_payload(0x00, SETRPRT, 0x0007, 0x00, 0x01);
     send_setup_data(setupBuffer.data, 8, SETUP, 0x01);
     
     printf("--Check Leds Success--\n");
@@ -415,24 +431,25 @@ int main(int argc, char *argv[]) {
     len = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, rxSamp, true);
 
     printf("--Keyboard Initialized--\n");
-    
     len = create_token_packet(packetBuff, IN, 0x01, 0x01);
     len = enc_nrzi(prepBuff, packetBuff, len, 0);
     int pollInterval = (kbdInfo.confData.endptDesc.interval * 1000);
-    /*
-    Does not automatically recover after size err because keyboard only sends a true "report"
-    If the state of the pressed keys have changed. If the state has not changed it responds with
-    a NAK. this means that if the packet communicating a key press gets corrupted the keyboard
-    will not send a followup saying which key is being pressed only NAK untill another change
-    occurs. I need to fix this.
-    */
+    
+    // Does not automatically recover after size err because keyboard only sends a true "report"
+    // If the state of the pressed keys have changed. If the state has not changed it responds with
+    // a NAK. this means that if the packet communicating a key press gets corrupted the keyboard
+    // will not send a followup saying which key is being pressed only NAK untill another change
+    // occurs. I need to fix this.
     while(1) {
-        //printf("\n--Get Keyboard Report--\n");
+        printf("--Get Keyboard Report--\n");
         rxBuff[0] = rxBuff[2] = 0;
         outLen = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, pollLen, true);
         switch(outLen) {
             case NOPKTERR:
                 //printf("No Packet Error\n");
+                break;
+            case PIDERR:
+                //printf("PID Error\n");
                 break;
             case SIZEERR:
                 //printf("Size Error\n");
@@ -442,6 +459,7 @@ int main(int argc, char *argv[]) {
                 break;
             case NAKRESP:
                 //printf("NAK\n");
+                break;
             default:
                 //if(true) {
                 if((rxBuff[0] != 0) || (rxBuff[2] != 0)) {
@@ -551,7 +569,7 @@ int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr,
     for(i=0; i<reqPackets; i++)
         rxSuccess[i] = 0x00;
     while(outLen != totalBytes) {
-        //printf("Desired Len: %d\n", totalBytes);
+        printf("Desired Len: %d\n", totalBytes);
         send_setup_data(outData, 8, pid, addr);
         inData = dataStartPtr;
         for(i=0; i<reqPackets; i++) {
@@ -568,6 +586,7 @@ int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr,
                         //printf("PKTSUCCESS outLen: %d\n", outLen);
                         break;
                     case SIZEERR:
+                        //dump_buffer(smiBuff, rxSamp);
                     case CRCERR:
                     case NOPKTERR:
                         break;
@@ -655,7 +674,7 @@ uint32_t *setup_smi_dma(MEM_MAP *mp, uint32_t **txSizePtr, uint32_t **rxSizePtr)
 
     // Delay to buy SMI TX time to complete
     cbs[8].ti = DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_WAIT_RESP;
-    cbs[8].tfr_len = 200;
+    cbs[8].tfr_len = 210; // Cannot be less than 200. Needs tuning on each system (usually set to 200 - 230)
     cbs[8].srce_ad = MEM_BUS_ADDR(mp, dmabuffer);
     cbs[8].dest_ad = MEM_BUS_ADDR(mp, dmabuffer);
     cbs[8].next_cb = MEM_BUS_ADDR(mp, &cbs[7]);
@@ -729,8 +748,10 @@ void run_smi(MEM_MAP *mp, uint16_t txCnt, uint16_t rxCnt, bool hostAck) {
     start_dma(mp, DMA_CHAN, &cbs[11], 0); // Enables DMA
 
     while (dma_active(DMA_CHAN)){
+        //printf("DMA Active\n");
         usleep(100);
     }
+    //printf("SMI Cycle Done\n");
 }
 
 // ADC DMA is complete, get data
@@ -739,13 +760,17 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
     uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01, pid, temp[11];
     int packetSize=0, seqOnes=0, i=0;
     do {
-        i++;
-        while(*bp==JSTATE)
+        while((*bp==JSTATE) && (i < nsamp)) {
             bp++;
+            i++;
+        }
         mode = findMode(bp, SAMPMULT);
     } while((mode == JSTATE) && (i < nsamp));
-    if(i == nsamp)
-        return NOPKTERR; 
+    //printf("i: %d, nsamp: %d\n", i, nsamp);
+    if(i == nsamp) {
+        printf("No Packet\n");
+        return NOPKTERR;
+    }
     //printf("Rx Presamp Cnt: %d\n", i);
     bp+=(7 * SAMPMULT);
     prevMode = findMode(bp, SAMPMULT);
@@ -797,11 +822,15 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
         case DATA0:
         case DATA1:
             packetSize -= 3;
-
+            break;
+        default:
+            printf("Unknown PID: %x\n", pid);
+            return PIDERR;
+            break;
     }
     calCrc = crc16(temp+1, packetSize);
     if(calCrc != rxCrc) {
-        //printf("CalCrc: %x, RxCrc: %x\n", calCrc, rxCrc);
+        printf("CalCrc: %x, RxCrc: %x\n", calCrc, rxCrc);
         return CRCERR;
     }
 
