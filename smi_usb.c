@@ -441,7 +441,7 @@ int main(int argc, char *argv[]) {
     // will not send a followup saying which key is being pressed only NAK untill another change
     // occurs. I need to fix this.
     while(1) {
-        printf("--Get Keyboard Report--\n");
+        //printf("--Get Keyboard Report--\n");
         rxBuff[0] = rxBuff[2] = 0;
         outLen = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, pollLen, true);
         switch(outLen) {
@@ -760,17 +760,13 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
     uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01, pid, temp[11];
     int packetSize=0, seqOnes=0, i=0;
     do {
-        while((*bp==JSTATE) && (i < nsamp)) {
+        i++;
+        while(*bp==JSTATE)
             bp++;
-            i++;
-        }
         mode = findMode(bp, SAMPMULT);
     } while((mode == JSTATE) && (i < nsamp));
-    //printf("i: %d, nsamp: %d\n", i, nsamp);
-    if(i == nsamp) {
-        printf("No Packet\n");
-        return NOPKTERR;
-    }
+    if(i == nsamp)
+        return NOPKTERR; 
     //printf("Rx Presamp Cnt: %d\n", i);
     bp+=(7 * SAMPMULT);
     prevMode = findMode(bp, SAMPMULT);
@@ -822,17 +818,11 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
         case DATA0:
         case DATA1:
             packetSize -= 3;
-            break;
-        default:
-            printf("Unknown PID: %x\n", pid);
-            return PIDERR;
-            break;
+
     }
     calCrc = crc16(temp+1, packetSize);
-    if(calCrc != rxCrc) {
-        printf("CalCrc: %x, RxCrc: %x\n", calCrc, rxCrc);
+    if(calCrc != rxCrc)
         return CRCERR;
-    }
 
     //temp++;
     //memcpy(data, &temp[1], packetSize);
