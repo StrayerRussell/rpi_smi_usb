@@ -566,6 +566,8 @@ int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr,
     uint8_t rxSuccess[reqPackets];
     dataStartPtr = inData;
     byteDiff = totalBytes % 8;
+    if(byteDiff == 0)
+        samplesOffset = maxSamples;
     for(i=0; i<reqPackets; i++)
         rxSuccess[i] = 0x00;
     while(outLen != totalBytes) {
