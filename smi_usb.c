@@ -762,13 +762,16 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
     uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01, pid, temp[11];
     int packetSize=0, seqOnes=0, i=0;
     do {
-        i++;
-        while(*bp==JSTATE)
+        while((*bp==JSTATE) && (i < nsamp)){
             bp++;
+            i++;
+        }
         mode = findMode(bp, SAMPMULT);
     } while((mode == JSTATE) && (i < nsamp));
-    if(i == nsamp)
+    if(i == nsamp) {
+        printf("No Packet Error\n");
         return NOPKTERR; 
+    }
     //printf("Rx Presamp Cnt: %d\n", i);
     bp+=(7 * SAMPMULT);
     prevMode = findMode(bp, SAMPMULT);
