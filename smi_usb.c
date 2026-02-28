@@ -47,10 +47,12 @@
 #if PHYS_REG_BASE==PI_4_REG_BASE                // Timings for RPi v4 (1.5 GHz)
 #define SMI_TIMING        1, 250, 500, 250, 31, 63, 31   // 1000 (roughly 1.5MHz)
 #else                                           // Timings for RPi v0-3 (1 GHz)
-#define SMI_TIMING        28, 8, 8, 8, 1, 1, 1   // 1.49Mhz TX 6Mhz RX
-//#define SMI_TIMING        28, 8, 8, 8, 2, 2, 2   // 1.49Mhz TX 12Mhz RX
+//#define SMI_TIMING        14, 16, 16, 16, 1, 1, 1   // 1.49Mhz TX 24Mhz RX
+#define SMI_TIMING        28, 8, 8, 8, 1, 1, 1   // 1.49Mhz TX 12 Mhz RX
+//#define SMI_TIMING        28, 8, 8, 8, 2, 2, 2   // 1.49Mhz TX 6Mhz RX
 #endif
 
+//#define SAMPMULT 16 // Oversampling multiplier
 #define SAMPMULT 8 // Oversampling multiplier
 //#define SAMPMULT 4 // Oversampling multiplier
 
@@ -441,8 +443,9 @@ int main(int argc, char *argv[]) {
     // will not send a followup saying which key is being pressed only NAK untill another change
     // occurs. I need to fix this.
     while(1) {
-        //printf("--Get Keyboard Report--\n");
-        rxBuff[0] = rxBuff[2] = 0;
+        //printf("<----------------Get Keyboard Report---------------->\n");
+        //rxBuff[0] = rxBuff[2] = 0xFF;
+        rxBuff[0] = rxBuff[2] = 0x00;
         outLen = run_transcieve_cycle(smiBuff, prepBuff, rxBuff, len, pollLen, true);
         switch(outLen) {
             case NOPKTERR:
@@ -453,6 +456,7 @@ int main(int argc, char *argv[]) {
                 break;
             case SIZEERR:
                 //printf("Size Error\n");
+                dump_buffer(smiBuff, pollLen);
                 break;
             case CRCERR:
                 //printf("Crc Error\n");
@@ -462,9 +466,12 @@ int main(int argc, char *argv[]) {
                 break;
             default:
                 //if(true) {
-                if((rxBuff[0] != 0) || (rxBuff[2] != 0)) {
+                //if((rxBuff[0] != 0xFF) || (rxBuff[2] != 0xFF)) {
+                if((rxBuff[0] != 0x00) || (rxBuff[2] != 0x00)) {
+                    //printf("Successfull Report\n");
                     printf("Kbd Rprt: ");
                     dump_hex(rxBuff, 8);
+                    //dump_buffer(smiBuff, pollLen);
                 }
                 break;
         }
@@ -588,9 +595,14 @@ int get_setup_data(uint8_t *inData, uint8_t *outData, uint8_t pid, uint8_t addr,
                         //printf("PKTSUCCESS outLen: %d\n", outLen);
                         break;
                     case SIZEERR:
-                        //dump_buffer(smiBuff, rxSamp);
+                        printf("SetupData\n");
+                        dump_buffer(smiBuff, rxSamp);
+                        break;
                     case CRCERR:
+                        //dump_buffer(smiBuff, rxSamp);
+                        break;
                     case NOPKTERR:
+                        //dump_buffer(smiBuff, rxSamp);
                         break;
                     default:
                         printf("UNKNOWNERR\n");
@@ -759,58 +771,77 @@ void run_smi(MEM_MAP *mp, uint16_t txCnt, uint16_t rxCnt, bool hostAck) {
 // ADC DMA is complete, get data
 int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
     uint16_t rxCrc=0, calCrc=0;
-    uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01, pid, temp[11];
-    int packetSize=0, seqOnes=0, i=0;
-    do {
-        while((*bp==JSTATE) && (i < nsamp)){
-            bp++;
-            i++;
+    uint8_t *bp = (uint8_t *)buff, currentVal, mask=0x01, pid, temp[12];
+    int packetSize=0, seqOnes=0, numBits=0, preTrim=1, i=0, j=1, k=0, l=0;
+    bool bitStuffed = false;
+    temp[packetSize] = 0;
+    while((bp[i] != SEZERO) && (i < nsamp)) {
+        currentVal = bp[i++];
+        do {
+            if(bp[i] == SEONE) {
+               i++;
+               j++;
+            }
+            j++;
+        } while(currentVal == bp[i++]);
+        //printf("J: %d\n", j);
+        if(preTrim > 0) {
+            preTrim--;
+        } else {
+            if(bitStuffed) {
+                //printf("*");
+                bitStuffed = false;
+            } else {
+                //printf("0");
+                l++;
+                if(mask == 0x80) {
+                    //printf("_");
+                    mask = 0x01;
+                    packetSize++;
+                    temp[packetSize] = 0;
+                } else {
+                    mask<<=1;
+                }
+            }
+            j += 4;
+            seqOnes = ((j/SAMPMULT) - 1);
+            /*
+            if(j%SAMPMULT > 4)
+                seqOnes++;
+            */
+            if(seqOnes > 5)
+                bitStuffed = true;
+            for(k=0; k < seqOnes; k++) {
+                //printf("1");
+                temp[packetSize] ^= mask;
+                l++;
+                if(mask == 0x80) {
+                    //printf("_");
+                    mask = 0x01;
+                    packetSize++;
+                    temp[packetSize] = 0;
+                } else {
+                    mask<<=1;
+                }
+            }
+            numBits += j;
         }
-        mode = findMode(bp, SAMPMULT);
-    } while((mode == JSTATE) && (i < nsamp));
-    if(i == nsamp) {
-        printf("No Packet Error\n");
+        i++;
+        j = 3;
+    }
+    //printf("\n");
+    if(i >= nsamp) {
+        //printf("No Packet Error\n");
         return NOPKTERR; 
     }
-    //printf("Rx Presamp Cnt: %d\n", i);
-    bp+=(7 * SAMPMULT);
-    prevMode = findMode(bp, SAMPMULT);
-    temp[packetSize] = 0;
-    i = 0;
-    do {
-        i++;
-        bp+=SAMPMULT;
-        if(seqOnes > 5) {
-            prevMode = findMode(bp, SAMPMULT);
-            bp+=SAMPMULT;
-            seqOnes = 0;
-        }
-        mode = findMode(bp, SAMPMULT);
-        if(mode == prevMode) {
-            //printf("1");
-            temp[packetSize] ^= mask;
-            seqOnes++;
-        } else {
-            //printf("0");
-            seqOnes = 0;
-        }
-        if(mask == 0x80) {
-            //printf("_");
-            mask = 0x01;
-            packetSize++;
-            temp[packetSize] = 0;
-        } else {
-            mask<<=1;
-        }
-        prevMode = mode;
-    } while(mode!=0);
-    //printf("\n");
-    if(--i%8) {
-        printf("SIZEERR: %d\n", i);
+    if(l%8) {
+        printf("Size Error: %d\n", l);
         return SIZEERR;
     }
+    //printf("numBits: %d, l: %d\n", numBits, l);
     rxCrc = temp[packetSize-1] << 8 | temp[packetSize-2];
-    pid = reverse_bits(*temp);
+    //pid = reverse_bits(*temp);
+    pid = reverse_bits(temp[1]);
     switch(pid) {
         case ACK:
             //printf("ACK\n");
@@ -822,10 +853,13 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
             break;
         case DATA0:
         case DATA1:
-            packetSize -= 3;
+            //printf("DAT\n");
+            //packetSize -= 3;
+            packetSize -= 4;
 
     }
-    calCrc = crc16(temp+1, packetSize);
+    calCrc = crc16(&temp[2], packetSize);
+    //printf("CalCRC: %x, rxCRC: %x\n", calCrc, rxCrc);
     if(calCrc != rxCrc)
         return CRCERR;
 
@@ -833,10 +867,9 @@ int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
     //memcpy(data, &temp[1], packetSize);
     
     for(i=0; i<packetSize; i++) {
-        data[i] = temp[i+1];
-        //printf("%x, ", temp[i]);
+        data[i] = temp[i+2];
+        //printf("%x, ", data[i]);
     }
-    
     //printf("\n");
     return(packetSize);
 }
@@ -916,15 +949,19 @@ void dump_buffer(uint8_t *buffer, int len) {
         switch(buffer[i]) {
             case 0:
                 printf("0");
+                //printf("%d,", SEZERO);
                 break;
             case JSTATE:
                 printf("J");
+                //printf("%d,", JSTATE);
                 break;
             case KSTATE:
                 printf("K");
+                //printf("%d,", KSTATE);
                 break;
             case 17:
                 printf("1");
+                //printf("%d,", SEONE);
                 break;
             default:
             printf("%x, ", buffer[i]);
