@@ -1,0 +1,226 @@
+#include <stdio.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <ctype.h>
+
+//#define SAMPMULT 16 // Oversampling multiplier
+#define SAMPMULT 8 // Oversampling multiplier
+//#define SAMPMULT 4 // Oversampling multiplier
+
+#define REQUEST_THRESH  2   // DMA request threshold
+#define DMA_CHAN        10  // DMA channel to use
+			    //
+// Number of samples to be captured
+#define NSAMPLES    512
+
+// Bus state definitions for USB
+#define JSTATE 0x01
+#define KSTATE 0x10
+#define SEZERO 0x00
+#define SEONE  0x11
+
+// PID Definitions for USB LS
+// all PID are pre reversed and have reversed compliment appended
+// Token
+#define OUT      0x87 //0x01
+#define IN       0x96 //0x09
+#define SOF      0xA5 //0x05
+#define SETUP    0xB4 //0x0D
+// Data
+#define DATA0    0xC3 //0x03
+#define DATA1    0xD2 //0x0B
+#define DATA2    0xE1 //0x07
+#define MDATA    0xF0 //0x0F
+// Handshake
+#define ACK      0x4B //0x02
+#define NAK      0x5A //0x0A
+#define STALL    0x78 //0x0E
+#define NYET     0x69 //0x06
+// Special  
+#define PRE      0x3C //0x0C
+#define ERR      0x3C //0x0C
+#define SPLIT    0x1E //0x08
+#define PING     0x2D //0x04
+
+// Parse Assistance
+#define ACKRESP    0xFF
+#define NAKRESP    0xFE
+#define SIZEERR    0xFD
+#define PIDERR     0xFC
+#define CRCERR     0xFB
+#define NOPKTERR   0xFA
+
+// High Level USB Definitions
+#define DEVDESCLEN  0x12
+#define CONFDESCLEN 0x09
+#define STRDESCLEN  0x02
+
+#define GETSTAT 0x00
+#define CLRFEAT 0x01
+#define SETFEAT 0x03
+#define SETADDR 0x05
+#define GETDESC 0x06
+#define SETDESC 0x07
+#define GETCONF 0x08
+#define SETCONF 0x09
+
+// HID specific definitions
+#define GETRPRT 0x01
+#define GETIDLE 0x02
+#define GETPTCL 0x03
+#define SETRPRT 0x09
+#define SETIDLE 0x0A
+#define SETPTCL 0x0B
+
+uint16_t crc16(uint8_t *data, int len) {
+    uint16_t crc = 0xFFFF;
+    uint8_t b, byte, i;
+    while (len--) {
+        byte = *data++;
+        for(i=0; i<8; i++) {
+            b = ((byte >> i) & 1) ^ (crc & 1);
+            //b = (byte ^ crc) & 1;
+            //byte >>= 1;
+            crc >>= 1;
+            if (b) {
+                crc ^=0xA001;
+            }
+        }
+    }
+    return crc ^ 0xFFFF;
+}
+
+uint8_t findMode(uint8_t *buff, int size) {
+    uint8_t maxVal=0, maxCnt=0, cnt, i, j;
+    for(i=0; i<size; ++i) {
+        cnt=0;
+        for(j=0; j<size; ++j) {
+            if(buff[j] == buff[i])
+                ++cnt;
+        }
+        if(cnt > maxCnt) {
+            maxCnt = cnt;
+            maxVal = buff[i];
+        }
+    }
+    return maxVal;
+}
+
+uint8_t reverse_bits (uint8_t b) {
+    b = (b & 0xF0) >> 4 | (b & 0x0F) << 4; // Step 1: Swap nibbles
+    b = (b & 0xCC) >> 2 | (b & 0x33) << 2; // Step 2: Swap pairs within nibbles
+    b = (b & 0xAA) >> 1 | (b & 0x55) << 1; // Step 3: Swap adjacent bits
+    return b;
+}
+
+// Swap adjacent bytes in transmit data
+void swap_bytes(void *data, int len) {
+    uint16_t *wp = (uint16_t *)data;
+    len = (len + 1) / 2;
+    while (len-- > 0)
+    {
+        *wp = __builtin_bswap16(*wp);
+        wp++;
+    }
+}
+
+// ADC DMA is complete, get data
+int parse_rx_data(void *buff, uint8_t *data, int nsamp) {
+    uint16_t rxCrc=0, calCrc=0;
+    uint8_t *bp = (uint8_t *)buff, mode, prevMode, mask=0x01, pid, temp[11];
+    int packetSize=0, seqOnes=0, i=0;
+    do {
+        while((*bp==JSTATE) && (i < nsamp)){
+            bp++;
+            i++;
+        }
+        mode = findMode(bp, SAMPMULT);
+    } while((mode == JSTATE) && (i < nsamp));
+    if(i == nsamp) {
+        //printf("No Packet Error\n");
+        return NOPKTERR; 
+    }
+    //printf("Rx Presamp Cnt: %d\n", i);
+    bp+=(7 * SAMPMULT);
+    prevMode = findMode(bp, SAMPMULT);
+    temp[packetSize] = 0;
+    i = 0;
+    do {
+        i++;
+        bp+=SAMPMULT;
+        if(seqOnes > 5) {
+            prevMode = findMode(bp, SAMPMULT);
+            bp+=SAMPMULT;
+            seqOnes = 0;
+        }
+        mode = findMode(bp, SAMPMULT);
+        if(mode == prevMode) {
+            printf("1");
+            temp[packetSize] ^= mask;
+            seqOnes++;
+        } else {
+            printf("0");
+            seqOnes = 0;
+        }
+        if(mask == 0x80) {
+            printf("_");
+            mask = 0x01;
+            packetSize++;
+            temp[packetSize] = 0;
+        } else {
+            mask<<=1;
+        }
+        prevMode = mode;
+    } while(mode!=0);
+    printf("\n");
+    if(--i%8) {
+        printf("SIZEERR: %d\n", i);
+        //dump_buffer((uint8_t *)buff, nsamp);
+        return SIZEERR;
+    }
+    rxCrc = temp[packetSize-1] << 8 | temp[packetSize-2];
+    pid = reverse_bits(*temp);
+    switch(pid) {
+        case ACK:
+            //printf("ACK\n");
+            return ACKRESP;
+            break;
+        case NAK:
+            //printf("NAK\n");
+            return NAKRESP;
+            break;
+        case DATA0:
+        case DATA1:
+            packetSize -= 3;
+
+    }
+    calCrc = crc16(temp+1, packetSize);
+    printf("CalCRC: %x, rxCRC: %x\n", calCrc, rxCrc);
+    if(calCrc != rxCrc)
+        return CRCERR;
+
+    //temp++;
+    //memcpy(data, &temp[1], packetSize);
+    
+    for(i=0; i<packetSize; i++) {
+        data[i] = temp[i+1];
+        //printf("%x, ", temp[i]);
+    }
+    
+    //printf("\n");
+    return(packetSize);
+}
+
+#define BUFFERSIZE 840
+
+uint8_t packet[840] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,1,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,1,17,1,1,1,1,1,1,1,1,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,17,1,1,1,1,1,1,1,1,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,16,1,1,1,1,1,1,16,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,17,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,16,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,16,1,1,1,1,1,1,16,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,17,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,16,1,1,1,1,1,1,16,1,16,16,16,16,16,16,1,16,1,1,1,1,1,1,16,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,17,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,1,1,1,1,1,1,1,1,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,16,16,16,16,16,16,16,16,1,17,1,1,1,1,1,1,16,1,16,16,16,16,16,16,16,16,16,16,16,16,16,16,1,16,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
+
+uint8_t output[8];
+
+int main(int argc, char *argv[]) {
+    parse_rx_data(packet, output, BUFFERSIZE);
+}
